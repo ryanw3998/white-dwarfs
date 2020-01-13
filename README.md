@@ -9,6 +9,6 @@ An idealized image reduction pipeline is essential to achive maximum sensitivity
 create a master script that calls upon functions within utilities, pre_process, and process to reduce 
 and analyze our data. My pipeline involves basic image reduction as well as methods for high contrast 
 imaging. These scripts also utilize tools from the Vortex Imaging Processing (VIP) python package 
-(Gomez et al, 2017) for median subtraction and image quality metrics.
+(Gomez Gonzalez et al, 2017) for median subtraction and image quality metrics.
 
 Enjoy your visit!
