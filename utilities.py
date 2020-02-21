@@ -25,7 +25,7 @@ def data_opener(master_path,prefix,aux_path,start_frame_num,end_frame_num,test_t
         parang_header = 'LBT_PARA'
     if return_parang == True:
         try:
-            parangs_load = pickle.load(open('{}reduced_data{}/parangs.p'.format(master_path,test_type), 'rb'))#Note that this will require pickel parangs before use, how can we get around that?
+            parangs_load = np.loadtxt('{}reduced_data{}/parangs.txt'.format(master_path,test_type))
         except:
             FileNotFoundError
     for i in range(start_frame_num, end_frame_num, 1):
@@ -43,7 +43,7 @@ def data_opener(master_path,prefix,aux_path,start_frame_num,end_frame_num,test_t
                 print('{} loaded'.format(fname_prefix))
             if return_parang == True:
                 try:
-                    parang = fits.open('{}raw_data/{}.fits'.format(master_path,fname_prefix))[0].header['{}'.format(parang_header)] #changed to pos angle for luci data
+                    parang = fits.open('{}raw_data/{}.fits'.format(master_path,fname_prefix))[0].header['{}'.format(parang_header)]
                     parangs.append(parang)
                 except:
                     parangs.append(parangs_load[i])
@@ -318,6 +318,35 @@ def decompressor(master_path,prefix,aux_path,start_frame_num,end_frame_num,retur
 def biassub(master_path,prefix,aux_path,start_frame_num,end_frame_num,return_path,test_type='',progress_print=False,luci=False):
     for i in range(start_frame_num, end_frame_num, 1):
         fname_prefix = '%s%03d'%(prefix,i)
+        print(fname_prefix)
+        try:
+            if aux_path == 'raw_data':
+                fname = fits.open('{}{}/{}.fits'.format(master_path,aux_path,fname_prefix))
+                fname_float = fname[0].data.astype(float)
+            elif aux_path == 'raw_data_bias':
+                fname = fits.open('{}{}/{}.fits'.format(master_path,aux_path,fname_prefix))
+                fname_float = fname[0].data.astype(float)
+            else:
+                fname = fits.open('{}reduced_data{}/{}/{}.fits'.format(master_path,test_type,aux_path,fname_prefix))
+                fname_float = fname[0].data.astype(float)
+            if progress_print == True:
+                print('{} loaded'.format(fname_prefix))
+        except:
+            FileNotFoundError
+            print('File Not Found Error')
+            continue
+        #print(type(fname))
+        #print(fname_float.shape)
+        fname_bias_sub = fname_float[1] - fname_float[0]
+        #fname_bias_sub = fname_float[1]
+        header = fname[0].header
+        fits.writeto('{}{}.fits'.format(return_path,fname_prefix),data=fname_bias_sub, header=header, overwrite = True)
+        print(fname_bias_sub.shape)
+
+def rms(master_path,prefix,aux_path,start_frame_num,end_frame_num,return_path,points,width,wd,tag='',test_type='',progress_print=False,luci=False):
+    all_rms = []
+    for i in range(start_frame_num, end_frame_num, 1):
+        fname_prefix = '%s%03d'%(prefix,i)
         try:
             if aux_path == 'raw_data':
                 fname = fits.open('{}{}/{}.fits'.format(master_path,aux_path,fname_prefix))
@@ -330,10 +359,48 @@ def biassub(master_path,prefix,aux_path,start_frame_num,end_frame_num,return_pat
         except:
             FileNotFoundError
             print('File Not Found Error')
+            all_rms.append([0,0,0])
             continue
-        print(type(fname))
-        print(fname_float.shape)
-        fname_bias_sub = fname_float[1] - fname_float[0]
-        header = fname[0].header
-        fits.writeto('{}{}.fits'.format(return_path,fname_prefix),data=fname_bias_sub, header=header, overwrite = True)
-        print(fname_bias_sub.shape)
+        rms_list = []
+        print('Frame =', i)
+        for j in range(3):
+            cb = points[j][1] - width
+            ct = points[j][1] + width
+            cl = points[j][0] - width
+            cr = points[j][0] + width
+            #print(cb,ct,cl,cr)
+            section = fname_float[cb:ct,cl:cr]
+            #print('Frame = ', i)
+            #print('Median = ', np.median(section))
+            #print('Mean = ', np.mean(section) )
+            #print('Standard deviation =', np.std(section))
+            bp_list_pos = np.where(section >= np.median(section)+5*np.std(section))
+            bp_list_neg = np.where(section <= np.median(section)-5*np.std(section))
+            bp_list_posx = list(bp_list_pos[0])
+            bp_list_posy = list(bp_list_pos[1])
+            bp_list_negx = list(bp_list_neg[0])
+            bp_list_negy = list(bp_list_neg[1])
+            bp_list_totx = bp_list_posx + bp_list_negx
+            bp_list_toty = bp_list_posy + bp_list_negy
+            bp_list = [bp_list_totx,bp_list_toty]
+            #print('Number of bad pixels = ', len(bp_list[0]))
+            section[tuple(bp_list)] = 0
+            #fits.writeto('section_test{}.fits'.format(j),np.squeeze(section),overwrite=True)
+            #fits.writeto('{}section_upperleft_post5_7124.fits'.format(return_path),data=section, overwrite = True)
+            array_size = (section.shape[0])*(section.shape[1])-len(bp_list[0])
+            rms = np.sqrt(np.sum(np.square(section))/(array_size))
+            rms_list.append(rms)
+            print('Post RMS = ',rms)
+            #print()
+        all_rms.append(rms_list)
+    all_rms = np.array (all_rms)
+    #print(all_rms[:,0])
+    plt.plot(np.arange(start_frame_num,end_frame_num),all_rms[:,0],label=points[0])
+    plt.plot(np.arange(start_frame_num,end_frame_num),all_rms[:,1],label=points[1])
+    plt.plot(np.arange(start_frame_num,end_frame_num),all_rms[:,2],label=points[2])
+    plt.legend(fontsize=10)
+    plt.title('RMS per frame {}'.format(wd))
+    plt.xlabel('Frame Number ({}+)'.format(prefix))
+    plt.ylabel('RMS')
+    plt.savefig('{}rms_{}{}.png'.format(return_path,wd,tag))
+    plt.show()

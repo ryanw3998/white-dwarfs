@@ -31,8 +31,10 @@ def nod_subtract(master_path,prefix,aux_path,start_frame_num,end_frame_num,retur
     for fname_prefix in fname_prefixes:
         if fits.open('{}raw_data/{}.fits'.format(master_path,fname_prefix))[0].header['FLAG'] == 'NOD_A':
             nods.append('NOD_A')
+            #print(fname_prefix,'NOD_A')
         else: 
             nods.append('NOD_B')
+            #print(fname_prefix,'NOD_B')
     fnames_np = np.array(fnames, dtype=np.float)
     fname_prefixes_np = np.array(fname_prefixes)
     line = 0
@@ -66,6 +68,7 @@ def nod_subtract(master_path,prefix,aux_path,start_frame_num,end_frame_num,retur
             line += 1
         fnames_nod_A_med = np.median(fnames_nod_A,axis=0)
         fnames_nod_B_med = np.median(fnames_nod_B,axis=0)
+        #print(len(fnames_nod_A),len(fnames_nod_B))
         for i in range(len(fnames_nod_A)):
             fname_sub_A = fnames_nod_A[i] - fnames_nod_B_med
             out_fits = fits.HDUList(fits.PrimaryHDU(fname_sub_A))
@@ -207,7 +210,7 @@ def frame_filter(master_path,prefix,aux_path,start_frame_num,end_frame_num,retur
         os.mkdir(return_path)
         print('Making directory')
     try:
-        os.remove('{}reduced_data/fwhm_median.p'.format(master_path))
+        os.remove('{}reduced_data/fwhm_median.txt'.format(master_path))
     except:
         FileNotFoundError
     cube,fname_prefixes = data_opener(master_path,prefix,aux_path,start_frame_num,end_frame_num,test_type,progress_print,luci)
@@ -217,6 +220,7 @@ def frame_filter(master_path,prefix,aux_path,start_frame_num,end_frame_num,retur
         except:
             FileNotFoundError
     cube = np.array(cube,dtype=np.float)
+    print('Pre-filter length = {}'.format(len(cube)))
     fname_prefixes = np.array(fname_prefixes)
     fwhms = []
     fname_prefixes_fwhm_filtered = []
@@ -228,41 +232,46 @@ def frame_filter(master_path,prefix,aux_path,start_frame_num,end_frame_num,retur
             print('{} fwhm_mean = {}'.format(fname_prefix,fwhm_mean))
         fwhms.append(fwhm_mean)
     fwhms = np.array(fwhms)
+    print(min(fwhms),max(fwhms))
     #Finding smallest fwhms 
-    fwhm_tolerance = fwhm_tolerance*0.01
-    print(len(cube))
-    g = int(np.ceil(len(cube)*fwhm_tolerance)) #make comment describing the effects of ceiling 
-    #g = int(np.ceil((end_frame_num-start_frame_num)*fwhm_tolerance)) #Kept for refrence
+    if fwhm_tolerance == 100:
+        g = len(cube)
+        cube_fwhm_filtered = cube
+        fname_prefixes_fwhm_filtered = fname_prefixes
+    else:
+        fwhm_tolerance = fwhm_tolerance*0.01
+        g = int(np.ceil(len(cube)*fwhm_tolerance)) #np.ceil will round up the number of frames to pass filtering
+        fwhm_filter = fwhms.argsort()[:g] #returns indicies of smallest fwhms
+        cube_fwhm_filtered = cube[fwhm_filter]
+        fname_prefixes_fwhm_filtered = fname_prefixes[fwhm_filter] #keeping track of prefixes
     if progress_print == True:
         print('{} frames within fwhm tolerance'.format(g))
-    fwhm_filter = np.argpartition(fwhms, g)[:g] #returns indicies of smallest fwhms
-    cube_fwhm_filtered = cube[fwhm_filter]
-    fname_prefixes_fwhm_filtered = fname_prefixes[fwhm_filter] #keeping track of prefixes
-    #Finding peak values in frames that passed fwhm filtering
+    #Finding peak flux values in frames that passed fwhm filtering
     peak_list = []
-    for fname,fname_prefix in zip(cube_fwhm_filtered,fname_prefixes_fwhm_filtered): 
-        peak = np.amax(fname)
-        peak_list.append(peak)
+    for fname,fname_prefix,fwhm in zip(cube_fwhm_filtered,fname_prefixes_fwhm_filtered,fwhms):
+        image_center = int((fname.shape)[0]/2 + .5) #Finding image center
+        flux = vip.metrics.aperture_flux(fname,[image_center],[image_center],fwhm=fwhm)
+        peak_list.append(flux[0])
         if progress_print == True:
-            print('{} peak = {}'.format(fname_prefix,peak))
+            print('{} peak = {}'.format(fname_prefix,flux[0]))
     peak_list = np.array(peak_list)
     #Finding frames with highest peaks
-    peak_tolerance = peak_tolerance*0.01
-    k = int(np.ceil((len(peak_list))*peak_tolerance))
+    if peak_tolerance == 100:
+        k = len(cube_fwhm_filtered)
+        cube_peak_filtered = cube_fwhm_filtered
+        fname_prefixes_peak_filtered = fname_prefixes_fwhm_filtered
+    else:
+        peak_tolerance = peak_tolerance*0.01
+        k = int(np.ceil((len(peak_list))*peak_tolerance))
+        peak_filter = peak_list.argsort()[-k:] #returns indicies of largest peak values
+        cube_peak_filtered = cube_fwhm_filtered[peak_filter]
+        fname_prefixes_peak_filtered = fname_prefixes_fwhm_filtered[peak_filter]
     if progress_print == True:
         print('{} frames within peak tolerance'.format(k))
-    peak_filter = np.argpartition(peak_list, -k)[-k:]
-    cube_peak_filtered = cube_fwhm_filtered[peak_filter]
-    fname_prefixes_peak_filtered = fname_prefixes_fwhm_filtered[peak_filter]
     #Frames are now peak filtered
     for fname,fname_prefix in zip(cube_peak_filtered,fname_prefixes_peak_filtered):
         out_fits = fits.HDUList(fits.PrimaryHDU(fname))
         out_fits.writeto('{}{}.fits'.format(return_path,fname_prefix), overwrite = True)
-    #Finding the median peak value across all frames
-    cube_fwhm_median = np.median(fwhms)
-    cube_fwhm_median_array = np.array([cube_fwhm_median])
-    np.savetxt('{}reduced_data{}/fwhm_median.txt'.format(master_path,test_type),cube_fwhm_median_array)
-    #pickle.dump(cube_fwhm_median, open('{}reduced_data{}/fwhm_median.p'.format(master_path,test_type),'wb'))
     print('{} frames passed filtering'.format(len(cube_peak_filtered)))
     
     del cube
@@ -284,12 +293,14 @@ def star_ultra_center(master_path,prefix,aux_path,start_frame_num,end_frame_num,
     filelist = [f for f in os.listdir(return_path) if f.endswith('.fits')]
     for f in filelist:
         os.remove(os.path.join(return_path,f))
-    fwhm_load = np.loadtxt('{}reduced_data{}/fwhm_median.txt'.format(master_path,test_type))
-    fwhm_load = float(fwhm_load)
-    print(fwhm_load)
-    cube,fname_prefixes = data_opener(master_path,prefix,aux_path,start_frame_num,end_frame_num,test_type,progress_print,luci)
+
+    cube,fname_prefixes = data_opener(master_path,prefix,aux_path,start_frame_num,end_frame_num,test_type,progress_print,luci=luci)
     cube_np_array = np.array(cube, dtype=np.float)
-    cube_ultra_center = cube_recenter_2dfit(cube_np_array, (crop_parameter+1,crop_parameter+1), fwhm = fwhm_load,  nproc=1, subi_size=20, model='gauss', negative=False, full_output=False, debug=False)
+    fnames_med = np.median(cube_np_array,axis=0)
+    fwhm = vip.var.fit_2dgaussian(fnames_med, crop=True, full_output=True,debug=False)
+    fwhm_mean = np.mean([fwhm.loc[0,'fwhm_x'],fwhm.loc[0,'fwhm_y']])
+    print('FWHM = {}'.format(fwhm_mean))
+    cube_ultra_center = cube_recenter_2dfit(cube_np_array, (crop_parameter+1,crop_parameter+1), fwhm = fwhm_mean, subi_size=20,debug=False)
     for fname_ultra_centered,fname_prefix_ultra_centered in zip(cube_ultra_center,fname_prefixes):
         out_fits = fits.HDUList(fits.PrimaryHDU(fname_ultra_centered))
         out_fits.writeto('{}{}.fits'.format(return_path,fname_prefix_ultra_centered), overwrite = True)
@@ -301,26 +312,29 @@ def star_ultra_center(master_path,prefix,aux_path,start_frame_num,end_frame_num,
     del cube_ultra_center
 
 def llsg_psf_subtraction(master_path,prefix,aux_path,start_frame_num,end_frame_num,return_path,progress_print,frame_set,rank_input,thresh_input,max_iter_input,luci=False,test_type=''):
-    #PSF subtraction based off LLSG algorithm published in Gomez et al 2018 (https://arxiv.org/pdf/1602.08381.pdf)
+    #PSF subtraction based off LLSG algorithm published in Gonzalez et al 2018 (https://arxiv.org/pdf/1602.08381.pdf)
     if os.path.isdir(return_path):
         print('Directory exists')
     else:
         os.mkdir(return_path)
         print('Making directory')
     cube,fname_prefixes,parangs = data_opener(master_path,prefix,aux_path,start_frame_num,end_frame_num,test_type,progress_print,return_parang=True,luci=luci)
-    fwhm_load = np.loadtxt('{}reduced_data{}/fwhm_median.txt'.format(master_path,test_type))
-    #fwhm_load = pickle.load(open('{}reduced_data{}/fwhm_median.p'.format(master_path,test_type),'rb'))
     cube_np_array = np.array(cube, dtype=np.float)
+    fnames_med = np.median(cube_np_array,axis=0)
+    fwhm = vip.var.fit_2dgaussian(fnames_med, crop=True, full_output=True,debug=False)
+    fwhm_mean = np.mean([fwhm.loc[0,'fwhm_x'],fwhm.loc[0,'fwhm_y']])
+    print('FWHM = {}'.format(fwhm_mean))
+
     parangs_np = np.array(parangs, dtype=np.float)
-    psf_subtraction = vip.llsg.llsg(cube_np_array, parangs_np, fwhm_load, rank=rank_input, thresh=thresh_input,max_iter=max_iter_input,random_seed=10,full_output=False)
+    psf_subtraction = vip.llsg.llsg(cube_np_array, parangs_np, fwhm_mean, rank=rank_input, thresh=thresh_input,max_iter=max_iter_input,random_seed=10,full_output=False)
     out_fits = fits.HDUList(fits.PrimaryHDU(psf_subtraction))
-    out_fits.writeto('{}llsg_sub_{}.fits'.format(return_path,frame_set), overwrite = True)
+    out_fits.writeto('{}llsg_sub_{}{}.fits'.format(return_path,frame_set,rank_input), overwrite = True)
     print('Star evaluated using llsg method')
     del cube
     del parangs
     del fname_prefixes
 
-def median_psf_subtraction(master_path,prefix,aux_path,start_frame_num,end_frame_num,return_path,progress_print,frame_set,luci=False,test_type=''):
+def median_psf_subtraction(master_path,prefix,aux_path,start_frame_num,end_frame_num,return_path,progress_print,frame_set,wd,luci=False,test_type=''):
     #Conventional psf subtraction algorithm
     if os.path.isdir(return_path):
         print('Directory exists')
@@ -329,50 +343,52 @@ def median_psf_subtraction(master_path,prefix,aux_path,start_frame_num,end_frame
         print('Making directory')
     cube,fname_prefixes,parangs = data_opener(master_path,prefix,aux_path,start_frame_num,end_frame_num,test_type,progress_print,return_parang=True,luci=luci)
 
-    a_frames = []
-    a_frames_pa = []
-    b_frames = []
-    b_frames_pa = []
-    for i,fname_prefix,parang in zip(cube,fname_prefixes,parangs):
-        if fits.open('{}raw_data/{}.fits'.format(master_path,fname_prefix))[0].header['FLAG'] == 'NOD_A':
-            a_frames.append(i)
-            a_frames_pa.append(parang)
-            print('a')
-        else:
-            b_frames.append(i)
-            b_frames_pa.append(parang)
-            print('b')
-    print(len(a_frames),len(b_frames))
-    a_frames_np = np.array(a_frames, dtype=np.float)
-    a_frames_pa_np = np.array(a_frames_pa, dtype=np.float)
-    b_frames_np = np.array(b_frames, dtype=np.float)
-    b_frames_pa_np =np.array(b_frames_pa, dtype=np.float)
-    fwhm_load = np.loadtxt('{}reduced_data{}/fwhm_median.txt'.format(master_path,test_type))
-
-
-    psf_subtraction_a = vip.medsub.median_sub(a_frames_np, a_frames_pa_np, fwhm=fwhm_load, mode='fullfr',full_output=False)
-    out_fits = fits.HDUList(fits.PrimaryHDU(psf_subtraction_a))
-    out_fits.writeto('{}median_sub_{}_a.fits'.format(return_path,frame_set), overwrite = True)
-
-    psf_subtraction_b = vip.medsub.median_sub(b_frames_np, b_frames_pa_np, fwhm=fwhm_load, mode='fullfr',full_output=False)
-    out_fits = fits.HDUList(fits.PrimaryHDU(psf_subtraction_b))
-    out_fits.writeto('{}median_sub_{}_b.fits'.format(return_path,frame_set), overwrite = True)
+    #a_frames = []
+    #a_frames_pa = []
+    #b_frames = []
+    #b_frames_pa = []
+    #for i,fname_prefix,parang in zip(cube,fname_prefixes,parangs):
+    #    if fits.open('{}raw_data/{}.fits'.format(master_path,fname_prefix))[0].header['FLAG'] == 'NOD_A':
+    #        a_frames.append(i)
+    #        a_frames_pa.append(parang)
+    #        print('a')
+    #    else:
+    #        b_frames.append(i)
+    #        b_frames_pa.append(parang)
+    #        print('b')
+    #print(len(a_frames),len(b_frames))
+    #a_frames_np = np.array(a_frames, dtype=np.float)
+    #a_frames_pa_np = np.array(a_frames_pa, dtype=np.float)
+    #b_frames_np = np.array(b_frames, dtype=np.float)
+    #b_frames_pa_np =np.array(b_frames_pa, dtype=np.float)
+    #fwhm_load = np.loadtxt('{}reduced_data{}/fwhm_median.txt'.format(master_path,test_type))
+#
+#
+    #psf_subtraction_a = vip.medsub.median_sub(a_frames_np, a_frames_pa_np, fwhm=fwhm_load, mode='fullfr',full_output=False)
+    #out_fits = fits.HDUList(fits.PrimaryHDU(psf_subtraction_a))
+    #out_fits.writeto('{}median_sub_{}_a.fits'.format(return_path,frame_set), overwrite = True)
+#
+    #psf_subtraction_b = vip.medsub.median_sub(b_frames_np, b_frames_pa_np, fwhm=fwhm_load, mode='fullfr',full_output=False)
+    #out_fits = fits.HDUList(fits.PrimaryHDU(psf_subtraction_b))
+    #out_fits.writeto('{}median_sub_{}_b.fits'.format(return_path,frame_set), overwrite = True)
 
     
-    ##print(parangs)
-    #fwhm_load = np.loadtxt('{}reduced_data{}/fwhm_median.txt'.format(master_path,test_type))
-    ##fwhm_load = pickle.load(open('{}reduced_data{}/fwhm_median.p'.format(master_path,test_type),'rb'))
-    #cube_np_array = np.array(cube, dtype=np.float)
-    #parangs_np = np.array(parangs, dtype=np.float)
-    #psf_subtraction = vip.medsub.median_sub(cube_np_array, parangs_np, fwhm=fwhm_load, mode='fullfr',full_output=False)
-    #out_fits = fits.HDUList(fits.PrimaryHDU(psf_subtraction))
-    #out_fits.writeto('{}median_sub_{}.fits'.format(return_path,frame_set), overwrite = True)
-    #print('Star evaluated using median psf subtraction method')
-    #del cube
-    #del parangs
-    #del fname_prefixes
 
-def psf_stacker(master_path,prefix,aux_path,start_frame_num,end_frame_num,return_path,progress_print,frame_set,luci=False,test_type=''):
+    cube_np_array = np.array(cube, dtype=np.float)
+    fnames_med = np.median(cube_np_array,axis=0)
+    fwhm = vip.var.fit_2dgaussian(fnames_med, crop=True, full_output=True,debug=False)
+    fwhm_mean = np.mean([fwhm.loc[0,'fwhm_x'],fwhm.loc[0,'fwhm_y']])
+    print('FWHM = {}'.format(fwhm_mean))
+    parangs_np = np.array(parangs, dtype=np.float)
+    psf_subtraction = vip.medsub.median_sub(cube_np_array, parangs_np, fwhm=fwhm_mean, mode='fullfr',full_output=False)
+    out_fits = fits.HDUList(fits.PrimaryHDU(psf_subtraction))
+    out_fits.writeto('{}median_sub_{}.fits'.format(return_path,frame_set), overwrite = True)
+    print('Star evaluated using median psf subtraction method')
+    del cube
+    del parangs
+    del fname_prefixes
+
+def psf_stacker(master_path,prefix,aux_path,start_frame_num,end_frame_num,return_path,progress_print,frame_set,wd,tag='',luci=False,test_type=''):
     #Median combines images together
 
     if os.path.isdir(return_path):
@@ -393,14 +409,24 @@ def psf_stacker(master_path,prefix,aux_path,start_frame_num,end_frame_num,return
     out_fits.writeto('{}{}_no_deroto.fits'.format(return_path,frame_set), overwrite = True)
     out_fits = fits.HDUList(fits.PrimaryHDU(fnames_median_deroto))
     out_fits.writeto('{}{}_deroto.fits'.format(return_path,frame_set), overwrite = True)
+    
+    plt.figure()
+    plt.plot(parangs,'o')
+    #plt.legend(fontsize=10)
+    plt.title('Parang per frame {}'.format(wd))
+    plt.xlabel('Frame Number ({}+)'.format(prefix))
+    plt.ylabel('Parallactic Angle')
+    plt.savefig('{}reduced_data/parang_{}{}.png'.format(master_path,wd,tag))
+    plt.show()
+
     print('Star median combined')
     print('Star derotated and median combined')
     del fnames
     del fname_prefixes
     del parangs
 
-def contrast_curve_test(master_path,prefix,aux_path,start_frame_num,end_frame_num,return_path,progress_print,frame_set,luci=False,test_type='',rank=1):
-    #Improved Contrast curve using algorithm from VIP, under construction
+def contrast_curve_vip(master_path,prefix,aux_path,start_frame_num,end_frame_num,return_path,progress_print,method,wd,star_mag,rank='',luci=False,test_type='',tag=''):
+    #Improved Contrast curve using algorithm from VIP
 
     if os.path.isdir(return_path):
         print('Directory exists')
@@ -413,9 +439,8 @@ def contrast_curve_test(master_path,prefix,aux_path,start_frame_num,end_frame_nu
     parangs = np.array(parangs,dtype=np.float)
     fnames_array = np.array(fnames,dtype=np.float)
     fnames_med = np.median(fnames_array,axis=0)
-    fwhm = vip.var.fit_2dgaussian(fnames_med, crop=True, full_output=True)
+    fwhm = vip.var.fit_2dgaussian(fnames_med, crop=True, full_output=True,debug=False)
     fwhm_mean = np.mean([fwhm.loc[0,'fwhm_x'],fwhm.loc[0,'fwhm_y']])
-    #print(fwhm)
     print('FWHM = {}'.format(fwhm_mean))
 
     image_center = int((fnames_med.shape)[0]/2 + .5) #Finding image center
@@ -429,15 +454,47 @@ def contrast_curve_test(master_path,prefix,aux_path,start_frame_num,end_frame_nu
         plate_scale = 10.7/1000.
     print('Plate Scale {}'.format(plate_scale))
 
-    path = '{}final/median_psf_subtraction/contrast_curve_test.png'.format(master_path)
-    #path = '{}final/llsg_psf_subtraction/contrast_curve_rank_{}.png'.format(master_path,rank)
+    path = '{}final/{}/contrast_curve{}.png'.format(master_path,method,tag)
     
-    data = vip.metrics.contrast_curve(fnames_array,parangs,fnames_med,fwhm_mean,plate_scale,flux[0],vip.medsub.median_sub,plot=True,save_plot=path,debug=True,full_output=True)
-    print(data[0])
-    print(data[1].shape)
-    print(data[2].shape)
-    print(data[3].shape)
-    #print(type(data[4]))
-    #vip.metrics.contrast_curve(fnames,parangs,psf,fwhm,plate_scale,fwhm_flux[0],vip.llsg.llsg,plot=True,save_plot=path,debug=True)
-    
-    plt.show()
+    if method == 'median_psf_subtraction':
+        data = vip.metrics.contrast_curve(fnames_array,parangs,fnames_med,fwhm_mean,plate_scale,flux[0],vip.medsub.median_sub,plot=True,save_plot=path,debug=False,full_output=True,object_name=wd)
+        
+    elif method == 'llsg_psf_subtraction':
+        data = vip.metrics.contrast_curve(fnames_array,parangs,fnames_med,fwhm_mean,plate_scale,flux[0],vip.llsg.llsg,plot=True,save_plot=path,debug=False,full_output=True,object_name=wd,rank=rank,thresh=1,max_iter=10)
+    #Saving CC data as Pandas dataframe
+    data[0].to_csv('{}final/{}/{}_cc_data{}.csv'.format(master_path,method,wd,tag))
+
+    #Plotting shifted magnitude plot. Adopting the convention from VIP source code
+    cont_curve_samp = data[0]['sensitivity_gaussian']
+    cont_curve_samp_corr = data[0]['sensitivity_student']
+    dpi = 300
+    figsize=(8, 4)
+    rad_samp_arcsec = data[0]['distance_arcsec']
+    rad_samp = data[0]['distance']
+    pxscale=plate_scale
+    label = ['Sensitivity (Gaussian)','Sensitivity (Student-t correction)']
+    fig2 = plt.figure(figsize=figsize, dpi=dpi)
+    ax3 = fig2.add_subplot(111)
+    cc_mags = -2.5*np.log10(cont_curve_samp)+star_mag
+    con4, = ax3.plot(rad_samp_arcsec, cc_mags, '-',
+                        alpha=0.2, lw=2, color='green')
+    con5, = ax3.plot(rad_samp_arcsec, cc_mags, '.', alpha=0.2,
+                        color='green')
+    cc_mags_corr = -2.5*np.log10(cont_curve_samp_corr)+star_mag
+    con6, = ax3.plot(rad_samp_arcsec, cc_mags_corr, '-',
+                        alpha=0.4, lw=2, color='blue')
+    con7, = ax3.plot(rad_samp_arcsec, cc_mags_corr, '.',
+                        alpha=0.4, color='blue')
+    lege = [(con4, con5), (con6, con7)]
+    plt.legend(lege, label, fancybox=True, fontsize='medium')
+    plt.xlabel('Angular separation [arcsec]')
+    plt.ylabel('Magnitude')
+    plt.gca().invert_yaxis()
+    plt.grid('on', which='both', alpha=0.2, linestyle='solid')
+    ax3.set_xlim(0, np.max(rad_samp*pxscale))
+    ax4 = ax3.twiny()
+    ax4.set_xlabel('Distance [pixels]')
+    ax4.plot(rad_samp, cc_mags, '', alpha=0.)
+    ax4.set_xlim(0, np.max(rad_samp))
+    magpath = '{}final/{}/mag_contrast_curve{}.png'.format(master_path,method,tag)
+    plt.savefig(magpath)
